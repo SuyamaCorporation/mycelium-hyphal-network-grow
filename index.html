@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>菌糸 ネットワーク 成長 シミュレーション</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-black text-white min-h-screen flex flex-col items-center p-3">
+<h1 class="text-xl font-bold text-green-400 mb-1">🍄 菌糸ネットワーク成長シミュレーション</h1>
+<p class="text-gray-500 text-xs mb-2">クリックで栄養源を置く（菌糸が引き寄せられる）</p>
+
+<div class="flex gap-3 mb-2 flex-wrap justify-center">
+  <button onclick="resetSim()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm" aria-label="リセット">⟳ リセット</button>
+  <label class="flex items-center gap-1 text-xs">
+    速度: <input type="range" id="speedSlider" min="1" max="10" value="5" class="w-16" aria-label="速度">
+  </label>
+  <label class="flex items-center gap-1 text-xs">
+    分岐率: <input type="range" id="branchSlider" min="1" max="10" value="4" class="w-16" aria-label="分岐率">
+  </label>
+  <button onclick="togglePause()" id="pauseBtn" class="bg-green-900 hover:bg-green-800 px-3 py-1 rounded text-sm" aria-label="一時停止">⏸ 停止</button>
+</div>
+
+<canvas id="myceliumCanvas" class="rounded-lg border border-gray-800 cursor-crosshair" width="500" height="450" aria-label="菌糸ネットワーク Canvas"></canvas>
+
+<div class="mt-2 text-xs text-gray-500 flex gap-4">
+  <span>菌糸長: <span id="totalLength" class="text-green-400">0</span>px</span>
+  <span>分岐点: <span id="branchCount" class="text-yellow-400">0</span></span>
+  <span>先端数: <span id="tipCount" class="text-cyan-400">0</span></span>
+</div>
+
+<div class="text-xs text-gray-600 mt-1">
+  <span class="text-green-500">●</span>菌糸先端
+  <span class="text-yellow-600">★</span>栄養源
+  <span class="text-gray-500">中心から広がる菌糸ネットワーク</span>
+</div>
+
+<script>
+const canvas = document.getElementById('myceliumCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+let tips = [], nutrients = [], segments = [], branchPts = 0, paused = false;
+let animFrame = null;
+
+function resetSim() {
+  tips = [];
+  nutrients = [];
+  segments = [];
+  branchPts = 0;
+  ctx.clearRect(0, 0, W, H);
+  drawBackground();
+  // Start tips in multiple directions from center
+  const cx = W/2, cy = H/2;
+  for(let i=0;i<6;i++){
+    const angle = (i/6)*Math.PI*2;
+    tips.push({ x:cx, y:cy, angle, age:0, energy:300 });
+  }
+  updateStats();
+}
+
+function drawBackground() {
+  const grad = ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,W/2);
+  grad.addColorStop(0,'#0a1a0a');
+  grad.addColorStop(1,'#000000');
+  ctx.fillStyle=grad;
+  ctx.fillRect(0,0,W,H);
+}
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width, scaleY = H / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+  nutrients.push({ x, y, strength: 150 });
+  drawNutrient(x, y);
+});
+
+function drawNutrient(x, y) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,200,50,0.8)';
+  ctx.beginPath();
+  ctx.arc(x, y, 5, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,220,100,0.3)';
+  ctx.beginPath();
+  ctx.arc(x, y, 15, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function chemotaxis(tip) {
+  if(!nutrients.length) return 0;
+  let totalForce = 0;
+  let forceDX = 0, forceDY = 0;
+  nutrients.forEach(n => {
+    const dx = n.x - tip.x, dy = n.y - tip.y;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+    if(dist < 150 && dist > 0) {
+      const force = n.strength / (dist * dist) * 500;
+      forceDX += (dx/dist)*force;
+      forceDY += (dy/dist)*force;
+    }
+  });
+  if(forceDX!==0||forceDY!==0){
+    const targetAngle = Math.atan2(forceDY, forceDX);
+    let diff = targetAngle - tip.angle;
+    while(diff > Math.PI) diff -= Math.PI*2;
+    while(diff < -Math.PI) diff += Math.PI*2;
+    return diff * 0.15;
+  }
+  return 0;
+}
+
+function growStep() {
+  const branchProb = document.getElementById('branchSlider').value / 100;
+  const newTips = [];
+  const toRemove = [];
+
+  tips.forEach((tip, idx) => {
+    if(tip.energy <= 0) { toRemove.push(idx); return; }
+    // Chemotaxis influence
+    const chem = chemotaxis(tip);
+    // Random wander
+    const wander = (Math.random()-0.5)*0.4;
+    tip.angle += chem + wander;
+    // Move
+    const speed = 2;
+    const nx = tip.x + Math.cos(tip.angle)*speed;
+    const ny = tip.y + Math.sin(tip.angle)*speed;
+    // Boundary check
+    if(nx<2||nx>W-2||ny<2||ny>H-2){ tip.energy=0; return; }
+    // Draw segment
+    const age = tip.age;
+    const alpha = Math.min(0.9, 0.3 + age*0.001);
+    const thickness = Math.max(0.3, 1.5 - age*0.003);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(nx, ny);
+    ctx.strokeStyle = `rgba(${120+Math.random()*40},${200+Math.random()*40},${100+Math.random()*30},${alpha})`;
+    ctx.lineWidth = thickness;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.restore();
+    segments.push({x1:tip.x,y1:tip.y,x2:nx,y2:ny});
+    tip.x = nx; tip.y = ny;
+    tip.age++;
+    tip.energy--;
+    // Branching
+    if(Math.random() < branchProb * 0.01 && tip.age > 20 && newTips.length + tips.length < 200) {
+      const branchAngle = tip.angle + (Math.random()>0.5?1:-1)*(0.4+Math.random()*0.5);
+      newTips.push({ x:tip.x, y:tip.y, angle:branchAngle, age:0, energy:120+Math.random()*80 });
+      branchPts++;
+    }
+    // Consume nearby nutrients
+    nutrients.forEach(n=>{
+      const d=Math.sqrt((tip.x-n.x)**2+(tip.y-n.y)**2);
+      if(d<10) { n.strength=Math.max(0,n.strength-5); tip.energy+=2; }
+    });
+  });
+  // Remove dead tips
+  for(let i=toRemove.length-1;i>=0;i--) tips.splice(toRemove[i],1);
+  tips.push(...newTips);
+  // Redraw nutrients
+  nutrients.forEach(n=>{ if(n.strength>0) drawNutrient(n.x,n.y); });
+  updateStats();
+}
+
+function updateStats() {
+  const totalLen = segments.length * 2;
+  document.getElementById('totalLength').textContent = totalLen;
+  document.getElementById('branchCount').textContent = branchPts;
+  document.getElementById('tipCount').textContent = tips.length;
+}
+
+function animate() {
+  if(!paused){
+    const speed = parseInt(document.getElementById('speedSlider').value);
+    for(let i=0;i<speed;i++){
+      if(tips.length > 0) growStep();
+    }
+  }
+  animFrame = requestAnimationFrame(animate);
+}
+
+function togglePause(){
+  paused=!paused;
+  document.getElementById('pauseBtn').textContent=paused?'▶ 再開':'⏸ 停止';
+}
+
+resetSim();
+animate();
+</script>
+</body>
+</html>
